@@ -1404,7 +1404,7 @@ def main() -> int:
     parser.add_argument(
         "--export-searches",
         metavar="FICHIER",
-        help="Exporter TOUTES les recherches brutes (triées par date, sans le filtre 'regret'). Ex: --export-searches recherches-2013.txt",
+        help="Exporter TOUTES les recherches brutes (rapport pro + CSV). Triées par date, sans filtre regret. Ex: --export-searches recherches-2012-2013.txt --min-year 2012",
     )
     parser.add_argument(
         "--max-year",
