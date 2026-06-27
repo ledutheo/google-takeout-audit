@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
 import json
 import re
@@ -1460,7 +1461,7 @@ def main() -> int:
 
     # Export brut des recherches (toutes, triées, filtrées par année si demandé)
     if args.export_searches:
-        log("→ Extraction de toutes les recherches brutes …")
+        log("→ Extraction des recherches brutes …")
         all_raw = collect_raw_searches(root)
         enriched: list[dict[str, Any]] = []
         for s in all_raw:
@@ -1471,15 +1472,46 @@ def main() -> int:
                 continue
             enriched.append({**s, "iso": iso, "year": year})
         enriched.sort(key=lambda x: (x.get("iso") or "9999-99-99", x.get("date_str") or ""))
+
+        # Stats légères
+        years_cnt = Counter()
+        sources_cnt = Counter()
+        flagged_cnt = 0
+        for it in enriched:
+            if it.get("year"): years_cnt[it["year"]] += 1
+            sources_cnt[it["source"]] += 1
+            if it.get("voice") or it.get("home") or it.get("device"):
+                flagged_cnt += 1
+
         outp = Path(args.export_searches).expanduser().resolve()
+        account = detect_account(root)
+        gen_date = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        # Fichier texte pro / rapport
         with outp.open("w", encoding="utf-8") as fh:
+            fh.write("Google Takeout — Recherches brutes\n")
+            fh.write("===================================\n\n")
+            fh.write(f"Compte          : {account}\n")
+            fh.write(f"Généré le       : {gen_date}\n")
+            fh.write(f"Entrées         : {len(enriched):,}\n".replace(",", " "))
+            if years_cnt:
+                ylist = ", ".join(f"{y} ({c})" for y, c in sorted(years_cnt.items()))
+                fh.write(f"Répartition     : {ylist}\n")
+            if sources_cnt:
+                slist = ", ".join(f"{s} ({c})" for s, c in sources_cnt.most_common(6))
+                fh.write(f"Sources         : {slist}\n")
+            if flagged_cnt:
+                fh.write(f"Avec contexte   : {flagged_cnt} (vocal / domicile / gps)\n")
             parts = []
-            if args.min_year: parts.append(f"depuis {args.min_year}")
-            if args.max_year: parts.append(f"jusqu'à {args.max_year}")
-            cutoff = " ".join(parts) if parts else "toutes"
-            fh.write(f"# Recherches brutes extraites du Takeout — {cutoff}\n")
-            fh.write(f"# Total: {len(enriched)} (après filtre année)\n")
-            fh.write("# Format: date | source | [flags] | requête\n\n")
+            if args.min_year: parts.append(str(args.min_year))
+            if args.max_year: parts.append(str(args.max_year))
+            if parts:
+                fh.write(f"Période filtrée : {'–'.join(parts)}\n")
+            fh.write(f"Outil           : google-takeout-audit (local, 100% offline)\n\n")
+            fh.write("Note : Données personnelles sensibles. Usage strictement personnel.\n\n")
+            fh.write("Format : date | source | [flags] | requête\n")
+            fh.write("—" * 70 + "\n\n")
+
             for item in enriched:
                 disp = item.get("iso") or item.get("date_str") or "?"
                 flags = []
@@ -1488,7 +1520,25 @@ def main() -> int:
                 if item.get("device"): flags.append("gps")
                 fstr = " [" + ",".join(flags) + "]" if flags else ""
                 fh.write(f"{disp} | {item['source']}{fstr} | {item['query']}\n")
+
+        # CSV compagnon (même base de nom)
+        csv_path = outp.with_suffix(".csv")
+        with csv_path.open("w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["date", "year", "source", "voice", "home", "device", "query"])
+            for item in enriched:
+                w.writerow([
+                    item.get("iso") or item.get("date_str") or "",
+                    item.get("year") or "",
+                    item.get("source", ""),
+                    "yes" if item.get("voice") else "",
+                    "yes" if item.get("home") else "",
+                    "yes" if item.get("device") else "",
+                    item.get("query", ""),
+                ])
+
         log(f"✓ {len(enriched)} recherches brutes → {outp}")
+        log(f"  + CSV propre     → {csv_path}")
     activity_dict = {
         "categories": activity.categories,
         "total_entries": activity.total_entries,
