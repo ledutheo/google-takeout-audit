@@ -33,6 +33,8 @@ Le script génère `audit-dashboard.html` dans le dossier Takeout, lance un serv
 python3 google-takeout-audit.py /chemin/vers/Takeout
 python3 google-takeout-audit.py /chemin/vers/Takeout -o /tmp/audit.html
 python3 google-takeout-audit.py /chemin/vers/Takeout --raw-gps   # carte plus dense (plus lent)
+python3 google-takeout-audit.py /chemin/vers/Takeout --export-searches recherches-brutes.txt --max-year 2013
+# → exporte toutes les recherches brutes (pas seulement les "regrets"), triées par date, jusqu'à fin 2013
 ```
 
 ## Fonctionnalités

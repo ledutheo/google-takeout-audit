@@ -634,6 +634,51 @@ def extract_search_hour(block: str) -> int | None:
     return None
 
 
+# --- Parsing dates françaises pour tri/filtre (recherches brutes) ------------
+
+FRENCH_MONTHS: dict[str, int] = {
+    "janvier": 1, "janv": 1, "jan": 1,
+    "février": 2, "fevrier": 2, "févr": 2, "fevr": 2, "fév": 2, "fev": 2,
+    "mars": 3,
+    "avril": 4, "avr": 4,
+    "mai": 5,
+    "juin": 6,
+    "juillet": 7, "juil": 7,
+    "août": 8, "aout": 8,
+    "septembre": 9, "sept": 9,
+    "octobre": 10, "oct": 10,
+    "novembre": 11, "nov": 11,
+    "décembre": 12, "decembre": 12, "déc": 12, "dec": 12,
+}
+
+
+def parse_date_to_sortable(date_str: str) -> tuple[str, int | None]:
+    """Retourne (clé_tri, année) à partir d'une date française du Takeout."""
+    if not date_str:
+        return "", None
+    # Format typique : "10 août 2013, 14:32:45 +01:00" ou "12 janvier 2012, 09:15:00 UTC+1"
+    m = re.search(
+        r"(\d{1,2})\s+([a-zéûàô]+)\.?\s+(\d{4})"
+        r"(?:,?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?)?",
+        date_str,
+        re.IGNORECASE,
+    )
+    if m:
+        day = int(m.group(1))
+        mon_name = m.group(2).lower().rstrip(".")
+        year = int(m.group(3))
+        month = FRENCH_MONTHS.get(mon_name, 0)
+        hour = int(m.group(4)) if m.group(4) else 0
+        minute = int(m.group(5)) if m.group(5) else 0
+        if month > 0:
+            iso = f"{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}"
+            return iso, year
+    # Fallback : juste l'année
+    y = re.search(r"(20\d{2})", date_str)
+    year = int(y.group(1)) if y else None
+    return date_str, year
+
+
 def score_search_regret(
     query: str,
     *,
@@ -767,6 +812,59 @@ def parse_activity_and_searches(root: Path) -> tuple[ActivityStats, list[dict[st
             )
 
     return activity, regrets, total_searches
+
+
+def collect_raw_searches(root: Path) -> list[dict[str, Any]]:
+    """Collecte TOUTES les recherches (brutes), sans filtre de score ni limite."""
+    searches: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    html_files = list(root.rglob("MonActivité.html")) + list(root.rglob("My Activity.html"))
+    seen_files: set[str] = set()
+
+    for fpath in html_files:
+        category = fpath.parent.name
+        key = f"{category}:{fpath.stat().st_size}"
+        if key in seen_files:
+            continue
+        seen_files.add(key)
+
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+
+        if category not in SEARCH_SOURCES:
+            continue
+
+        for block in SEARCH_BLOCK_SPLIT.split(content)[1:]:
+            if not ACTIVITY_PATTERNS["recherche"].search(block):
+                continue
+            query = extract_search_query(block)
+            if not query:
+                continue
+
+            date_str = extract_search_date(block)
+            dedup_key = (category, query, date_str)
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+            block_voice = bool(ACTIVITY_PATTERNS["vocal"].search(block))
+            block_home = bool(ACTIVITY_PATTERNS["lieu_domicile"].search(block))
+            block_device = bool(ACTIVITY_PATTERNS["lieu_appareil"].search(block))
+
+            searches.append(
+                {
+                    "date_str": date_str,
+                    "query": query,
+                    "source": category,
+                    "voice": block_voice,
+                    "home": block_home,
+                    "device": block_device,
+                }
+            )
+    return searches
 
 
 def build_privacy_findings(
@@ -1302,6 +1400,18 @@ def main() -> int:
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--export-searches",
+        metavar="FICHIER",
+        help="Exporter TOUTES les recherches brutes (triées par date, sans le filtre 'regret'). Ex: --export-searches recherches-2013.txt",
+    )
+    parser.add_argument(
+        "--max-year",
+        type=int,
+        default=None,
+        metavar="ANNEE",
+        help="Ne conserver que les recherches jusqu'à cette année incluse (ex: --max-year 2013 pour jusqu'à fin 2013 / majorité).",
+    )
     args = parser.parse_args()
 
     root = Path(args.takeout_dir).expanduser().resolve()
@@ -1340,6 +1450,33 @@ def main() -> int:
     activity, raw_regrets, search_total = parse_activity_and_searches(root)
     searches = finalize_search_regrets(raw_regrets)
     searches.total = search_total
+
+    # Export brut des recherches (toutes, triées, filtrées par année si demandé)
+    if args.export_searches:
+        log("→ Extraction de toutes les recherches brutes …")
+        all_raw = collect_raw_searches(root)
+        enriched: list[dict[str, Any]] = []
+        for s in all_raw:
+            iso, year = parse_date_to_sortable(s["date_str"])
+            if args.max_year is not None and year is not None and year > args.max_year:
+                continue
+            enriched.append({**s, "iso": iso, "year": year})
+        enriched.sort(key=lambda x: (x.get("iso") or "9999-99-99", x.get("date_str") or ""))
+        outp = Path(args.export_searches).expanduser().resolve()
+        with outp.open("w", encoding="utf-8") as fh:
+            cutoff = f"jusqu'à {args.max_year}" if args.max_year else "toutes"
+            fh.write(f"# Recherches brutes extraites du Takeout — {cutoff}\n")
+            fh.write(f"# Total: {len(enriched)} (après filtre année)\n")
+            fh.write("# Format: date | source | [flags] | requête\n\n")
+            for item in enriched:
+                disp = item.get("iso") or item.get("date_str") or "?"
+                flags = []
+                if item.get("voice"): flags.append("vocal")
+                if item.get("home"): flags.append("domicile")
+                if item.get("device"): flags.append("gps")
+                fstr = " [" + ",".join(flags) + "]" if flags else ""
+                fh.write(f"{disp} | {item['source']}{fstr} | {item['query']}\n")
+        log(f"✓ {len(enriched)} recherches brutes → {outp}")
     activity_dict = {
         "categories": activity.categories,
         "total_entries": activity.total_entries,
