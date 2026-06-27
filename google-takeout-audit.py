@@ -1412,6 +1412,13 @@ def main() -> int:
         metavar="ANNEE",
         help="Ne conserver que les recherches jusqu'à cette année incluse (ex: --max-year 2013 pour jusqu'à fin 2013 / majorité).",
     )
+    parser.add_argument(
+        "--min-year",
+        type=int,
+        default=None,
+        metavar="ANNEE",
+        help="Ne conserver que les recherches à partir de cette année (ex: --min-year 2012).",
+    )
     args = parser.parse_args()
 
     root = Path(args.takeout_dir).expanduser().resolve()
@@ -1458,13 +1465,18 @@ def main() -> int:
         enriched: list[dict[str, Any]] = []
         for s in all_raw:
             iso, year = parse_date_to_sortable(s["date_str"])
+            if args.min_year is not None and year is not None and year < args.min_year:
+                continue
             if args.max_year is not None and year is not None and year > args.max_year:
                 continue
             enriched.append({**s, "iso": iso, "year": year})
         enriched.sort(key=lambda x: (x.get("iso") or "9999-99-99", x.get("date_str") or ""))
         outp = Path(args.export_searches).expanduser().resolve()
         with outp.open("w", encoding="utf-8") as fh:
-            cutoff = f"jusqu'à {args.max_year}" if args.max_year else "toutes"
+            parts = []
+            if args.min_year: parts.append(f"depuis {args.min_year}")
+            if args.max_year: parts.append(f"jusqu'à {args.max_year}")
+            cutoff = " ".join(parts) if parts else "toutes"
             fh.write(f"# Recherches brutes extraites du Takeout — {cutoff}\n")
             fh.write(f"# Total: {len(enriched)} (après filtre année)\n")
             fh.write("# Format: date | source | [flags] | requête\n\n")
